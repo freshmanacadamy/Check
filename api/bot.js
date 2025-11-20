@@ -1881,9 +1881,18 @@ bot.catch((err, ctx) => {
     console.error('❌ Even error reply failed:', e);
   }
 });
+// Add this before the Vercel handler
+bot.telegram.setWebhook(`https://${process.env.VERCEL_URL}/api/bot`);
 
+// Health check
+bot.command('status', (ctx) => {
+  ctx.reply(`✅ Bot is running\n📊 Confession counter: ${confessionCounter}\n🕒 Uptime: ${process.uptime()}s`);
+});
 // ==================== VERCEL HANDLER ====================
-
+// Add this at the top of your Vercel handler
+if (!process.env.TELEGRAM_BOT_TOKEN) {
+  console.error('❌ TELEGRAM_BOT_TOKEN is required');
+}
 // ==================== VERCEL HANDLER ====================
 module.exports = async (req, res) => {
   console.log('🔄 Vercel webhook received', req.method, req.url);
