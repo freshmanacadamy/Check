@@ -1,17 +1,27 @@
-require('dotenv').config();
-const { Telegraf, Markup, session } = require('telegraf');
-const admin = require('firebase-admin');
-
 // ==================== FIREBASE SETUP ====================
-const privateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n');
+const privateKey = process.env.FIREBASE_PRIVATE_KEY;
 const serviceAccount = {
   type: "service_account",
   project_id: process.env.FIREBASE_PROJECT_ID,
-  private_key: privateKey,
+  private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
+  private_key: privateKey ? privateKey.replace(/\\n/g, '\n') : undefined,
   client_email: process.env.FIREBASE_CLIENT_EMAIL,
+  client_id: process.env.FIREBASE_CLIENT_ID,
+  auth_uri: "https://accounts.google.com/o/oauth2/auth",
+  token_uri: "https://oauth2.googleapis.com/token",
+  auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs"
 };
 
-if (!admin.apps.length) {
+// Validate required environment variables
+const requiredEnvVars = ['FIREBASE_PRIVATE_KEY', 'FIREBASE_PROJECT_ID', 'FIREBASE_CLIENT_EMAIL', 'TELEGRAM_BOT_TOKEN'];
+const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
+
+if (missingVars.length > 0) {
+  console.error('❌ Missing required environment variables:', missingVars);
+  // Don't crash, just log the error
+}
+
+if (!admin.apps.length && missingVars.length === 0) {
   try {
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount),
@@ -21,35 +31,6 @@ if (!admin.apps.length) {
     console.error('❌ Firebase initialization failed:', error);
   }
 }
-
-const db = admin.firestore();
-const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-
-// ==================== GLOBAL VARIABLES ====================
-let confessionCounter = 0;
-const userCooldown = new Map();
-
-// ==================== INITIALIZATION ====================
-async function initializeCounter() {
-  try {
-    console.log('🔄 Initializing confession counter...');
-    const snapshot = await db.collection('confessions')
-      .where('status', '==', 'approved')
-      .orderBy('confessionNumber', 'desc')
-      .limit(1)
-      .get();
-    
-    if (!snapshot.empty) {
-      const latest = snapshot.docs[0].data();
-      confessionCounter = latest.confessionNumber || 0;
-    }
-    console.log(`✅ Confession counter initialized: ${confessionCounter}`);
-  } catch (error) {
-    console.error('❌ Counter init error:', error);
-    confessionCounter = 0;
-  }
-}
-
 // Initialize immediately
 initializeCounter();
 
@@ -1902,23 +1883,32 @@ bot.catch((err, ctx) => {
 });
 
 // ==================== VERCEL HANDLER ====================
+
+// ==================== VERCEL HANDLER ====================
 module.exports = async (req, res) => {
-  console.log('🔄 Vercel webhook received');
+  console.log('🔄 Vercel webhook received', req.method, req.url);
   
   try {
-    // Initialize counter if needed
-    if (confessionCounter === 0) {
-      await initializeCounter();
+    // Only handle POST requests for webhooks
+    if (req.method === 'POST') {
+      await bot.handleUpdate(req.body);
+      res.status(200).json({ status: 'OK' });
+    } else {
+      // For GET requests, show bot status
+      res.status(200).json({ 
+        status: 'Bot is running',
+        timestamp: new Date().toISOString(),
+        confessionCounter: confessionCounter
+      });
     }
-    
-    await bot.handleUpdate(req.body);
-    res.status(200).send('OK');
   } catch (error) {
     console.error('❌ Webhook error:', error);
-    res.status(200).send('OK');
+    res.status(200).json({ 
+      status: 'OK', 
+      error: error.message 
+    });
   }
 };
-
 // ==================== LOCAL DEVELOPMENT ====================
 if (process.env.NODE_ENV === 'development') {
   bot.launch().then(() => {
