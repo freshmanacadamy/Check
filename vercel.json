@@ -10,11 +10,20 @@
     {
       "src": "/api/bot",
       "dest": "/api/bot.js",
-      "methods": ["POST", "GET"]
+      "methods": ["GET", "POST"]
+    },
+    {
+      "src": "/api/(.*)",
+      "dest": "/api/bot.js"
     },
     {
       "src": "/(.*)",
       "dest": "/api/bot.js"
     }
-  ]
+  ],
+  "functions": {
+    "api/bot.js": {
+      "maxDuration": 30
+    }
+  }
 }
