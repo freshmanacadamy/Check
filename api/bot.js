@@ -1,3 +1,7 @@
+require('dotenv').config();
+const { Telegraf, Markup, session } = require('telegraf');
+const admin = require('firebase-admin');
+
 // ==================== FIREBASE SETUP ====================
 const privateKey = process.env.FIREBASE_PRIVATE_KEY;
 const serviceAccount = {
@@ -13,12 +17,11 @@ const serviceAccount = {
 };
 
 // Validate required environment variables
-const requiredEnvVars = ['FIREBASE_PRIVATE_KEY', 'FIREBASE_PROJECT_ID', 'FIREBASE_CLIENT_EMAIL', 'TELEGRAM_BOT_TOKEN'];
+const requiredEnvVars = ['FIREBASE_PRIVATE_KEY', 'FIREBASE_PROJECT_ID', 'FIREBASE_CLIENT_EMAIL', 'BOT_TOKEN'];
 const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
 
 if (missingVars.length > 0) {
   console.error('❌ Missing required environment variables:', missingVars);
-  // Don't crash, just log the error
 }
 
 if (!admin.apps.length && missingVars.length === 0) {
@@ -31,8 +34,33 @@ if (!admin.apps.length && missingVars.length === 0) {
     console.error('❌ Firebase initialization failed:', error);
   }
 }
-// Initialize immediately
-initializeCounter();
+
+// ==================== BOT INITIALIZATION ====================
+const db = admin.firestore();
+const bot = new Telegraf(process.env.BOT_TOKEN);
+
+// ==================== GLOBAL VARIABLES ====================
+let confessionCounter = 0;
+const userCooldown = new Map();
+
+// ==================== COUNTER INITIALIZATION ====================
+async function initializeCounter() {
+  try {
+    const snapshot = await db.collection('confessions')
+      .where('status', '==', 'approved')
+      .orderBy('confessionNumber', 'desc')
+      .limit(1)
+      .get();
+    
+    if (!snapshot.empty) {
+      const latest = snapshot.docs[0].data();
+      confessionCounter = latest.confessionNumber || 0;
+    }
+    console.log(`✅ Confession counter initialized: ${confessionCounter}`);
+  } catch (error) {
+    console.error('❌ Counter init error:', error);
+  }
+}
 
 // ==================== SESSION MIDDLEWARE ====================
 bot.use(session({ 
@@ -177,7 +205,6 @@ class DatabaseManager {
 
 const dbManager = new DatabaseManager();
 
-
 // ==================== START COMMAND & MAIN MENU ====================
 bot.command('start', async (ctx) => {
   console.log(`🚀 Start command from user: ${ctx.from.id}`);
@@ -300,30 +327,6 @@ bot.action('main_menu', async (ctx) => {
   } catch (error) {
     console.error('❌ Main menu error:', error);
     await ctx.answerCbQuery('❌ Error loading menu');
-  }
-});
-
-// ==================== BROWSE CONFESSIONS BUTTON ====================
-bot.action('browse_confessions', async (ctx) => {
-  try {
-    const confessionsText = `📋 *Browse Confessions*\n\n` +
-      `View recent confessions from the community:`;
-
-    const keyboard = Markup.inlineKeyboard([
-      [Markup.button.callback('🔄 Latest Confessions', 'view_latest_confessions')],
-      [Markup.button.callback('🔥 Trending', 'view_trending_confessions')],
-      [Markup.button.callback('🔍 Search Hashtags', 'search_hashtags')],
-      [Markup.button.callback('🔙 Main Menu', 'main_menu')]
-    ]);
-
-    await ctx.editMessageText(confessionsText, { 
-      parse_mode: 'Markdown',
-      reply_markup: keyboard.reply_markup 
-    });
-    await ctx.answerCbQuery();
-  } catch (error) {
-    console.error('❌ Browse confessions error:', error);
-    await ctx.answerCbQuery('❌ Error loading confessions');
   }
 });
 
@@ -457,7 +460,7 @@ async function notifyAdmins(confessionId, text, username) {
       console.error(`❌ Admin notify error ${adminId}:`, error);
     }
   }
-       }
+}
 
 // ==================== ADMIN APPROVAL BUTTON ====================
 bot.action(/approve_(.+)/, async (ctx) => {
@@ -549,119 +552,6 @@ async function handleRejectionReason(ctx, reason) {
   ctx.session.rejectingConfession = null;
 }
 
-// ==================== ADMIN VIEW USER BUTTON ====================
-bot.action(/view_user_(.+)/, async (ctx) => {
-  const userId = ctx.match[1];
-  
-  try {
-    const user = await dbManager.getUser(userId);
-    if (!user) {
-      await ctx.answerCbQuery('❌ User not found');
-      return;
-    }
-
-    // Get user's confessions count
-    const confessionsSnapshot = await db.collection('confessions')
-      .where('userId', '==', userId)
-      .get();
-
-    const userInfo = `👤 *User Profile (Admin View)*\n\n` +
-      `🆔 *Telegram ID:* ${userId}\n` +
-      `📛 *Username:* @${user.username || 'No username'}\n` +
-      `🎭 *Nickname:* ${user.nickname}\n` +
-      `✨ *Aura:* ${user.aura}\n` +
-      `👥 *Followers:* ${user.followers.length} | *Following:* ${user.following.length}\n\n` +
-      `📊 *Statistics:*\n` +
-      `• Confessions: ${confessionsSnapshot.size}\n` +
-      `• Joined: ${new Date(user.joinedAt).toLocaleDateString()}\n` +
-      `• Last Seen: ${new Date(user.lastSeen).toLocaleString()}\n\n` +
-      `📝 *Bio:* ${user.bio}`;
-
-    const keyboard = Markup.inlineKeyboard([
-      [
-        Markup.button.callback('📩 Message User', `message_user_${userId}`),
-        Markup.button.callback('🚫 Block User', `block_user_${userId}`)
-      ],
-      [
-        Markup.button.callback('📊 User Analytics', `user_analytics_${userId}`),
-        Markup.button.callback('🔙 Back', 'admin_dashboard')
-      ]
-    ]);
-
-    await ctx.editMessageText(userInfo, { 
-      parse_mode: 'Markdown',
-      reply_markup: keyboard.reply_markup 
-    });
-    await ctx.answerCbQuery();
-  } catch (error) {
-    console.error('❌ View user error:', error);
-    await ctx.answerCbQuery('❌ Error loading user');
-  }
-});
-
-// ==================== ADMIN MESSAGE USER BUTTON ====================
-bot.action(/message_user_(.+)/, async (ctx) => {
-  const userId = ctx.match[1];
-  
-  try {
-    const user = await dbManager.getUser(userId);
-    if (!user) {
-      await ctx.answerCbQuery('❌ User not found');
-      return;
-    }
-
-    await ctx.editMessageText(
-      `📩 *Messaging User*\n\n` +
-      `User: ${user.nickname} (@${user.username || 'no_username'})\n` +
-      `ID: ${userId}\n\n` +
-      `Type your message below:`,
-      { parse_mode: 'Markdown' }
-    );
-    ctx.session.messagingUser = userId;
-    await ctx.answerCbQuery();
-  } catch (error) {
-    console.error('❌ Message user error:', error);
-    await ctx.answerCbQuery('❌ Error starting message');
-  }
-});
-
-// ==================== HANDLE ADMIN MESSAGE ====================
-async function handleAdminMessage(ctx, text) {
-  const userId = ctx.session.messagingUser;
-
-  try {
-    const user = await dbManager.getUser(userId);
-    if (!user) {
-      await ctx.reply('❌ User not found');
-      ctx.session.messagingUser = null;
-      return;
-    }
-
-    await bot.telegram.sendMessage(
-      userId, 
-      `📩 *Message from Admin*\n\n${text}\n\n💬 You can reply to this message.`,
-      { parse_mode: 'Markdown' }
-    );
-
-    // Save message to database for monitoring
-    const messageId = `admin_msg_${Date.now()}`;
-    await dbManager.createMessage({
-      messageId: messageId,
-      fromUserId: ctx.from.id,
-      toUserId: userId,
-      text: text,
-      isAdminMessage: true,
-      createdAt: new Date().toISOString()
-    });
-
-    await ctx.reply(`✅ Message sent to ${user.nickname} (@${user.username || 'no_username'})`);
-  } catch (error) {
-    await ctx.reply(`❌ Failed to send message. User may have blocked the bot.`);
-  }
-  
-  ctx.session.messagingUser = null;
-}
-
 // ==================== CHANNEL POSTING ====================
 async function postToChannel(text, number, hashtags = [], confessionId) {
   const channelId = process.env.CHANNEL_ID;
@@ -712,7 +602,6 @@ async function notifyUser(userId, number, status, reason = '') {
     console.error('❌ User notify error:', error);
   }
 }
-
 // ==================== CONFESSION COMMENT BUTTON (FROM CHANNEL) ====================
 bot.action(/confession_(.+)/, async (ctx) => {
   const confessionId = ctx.match[1];
@@ -872,9 +761,6 @@ async function handleCommentSubmission(ctx, text) {
       commentCount: comments.length
     });
 
-    // Update channel button with new count
-    await updateChannelCommentCount(confessionId, comments.length);
-
     // Notify confession owner (if it's not the owner commenting)
     if (confession.userId !== userId) {
       await notifyCommentOwner(confession, text.trim(), comments.length);
@@ -901,21 +787,6 @@ async function handleCommentSubmission(ctx, text) {
     await ctx.reply('❌ Error submitting comment. Please try again.');
     ctx.session.waitingForComment = false;
     ctx.session.commentConfessionId = null;
-  }
-}
-
-// ==================== UPDATE CHANNEL COMMENT COUNT ====================
-async function updateChannelCommentCount(confessionId, count) {
-  try {
-    // This would require storing channel message IDs and editing the message
-    // For now, we'll just log it
-    console.log(`📊 Comment count updated for confession ${confessionId}: ${count} comments`);
-    
-    // In a full implementation, you would:
-    // 1. Store channelMessageId when posting confession
-    // 2. Use bot.telegram.editMessageReplyMarkup() to update the button
-  } catch (error) {
-    console.error('❌ Update comment count error:', error);
   }
 }
 
@@ -1066,8 +937,6 @@ async function handlePrivateMessage(ctx, text) {
 // ==================== NOTIFY PRIVATE MESSAGE RECIPIENT ====================
 async function notifyPrivateMessageRecipient(toUserId, fromUserId, messageText) {
   try {
-    const fromUser = await dbManager.getUser(fromUserId);
-    
     const keyboard = Markup.inlineKeyboard([
       [Markup.button.callback('💌 Reply Anonymously', `private_message_${fromUserId}`)],
       [Markup.button.callback('🚫 Block User', `block_user_${fromUserId}`)]
@@ -1204,7 +1073,6 @@ bot.action('show_profile', async (ctx) => {
     await ctx.answerCbQuery('❌ Error loading profile');
   }
 });
-
 // ==================== EDIT PROFILE BUTTON ====================
 bot.action('edit_profile', async (ctx) => {
   const userId = ctx.from.id;
@@ -1239,109 +1107,6 @@ bot.action('edit_profile', async (ctx) => {
   } catch (error) {
     console.error('❌ Edit profile error:', error);
     await ctx.answerCbQuery('❌ Error loading editor');
-  }
-});
-
-// ==================== USER SETTINGS BUTTON ====================
-bot.action('user_settings', async (ctx) => {
-  const userId = ctx.from.id;
-  
-  try {
-    const user = await dbManager.getUser(userId);
-    if (!user) {
-      await ctx.answerCbQuery('❌ User not found');
-      return;
-    }
-
-    const settingsText = `🔧 *User Settings*\n\n` +
-      `*General Settings:*\n` +
-      `📄 Comments Per Page: ${user.settings.commentsPerPage}\n` +
-      `💬 Allow Chat Requests: ${user.privacySettings.allowChats ? '✅ Yes' : '❌ No'}\n\n` +
-      `*Notification Settings:*\n` +
-      `🔔 Push Notifications: ${user.settings.notifications ? '✅ Enabled' : '❌ Disabled'}`;
-
-    const keyboard = Markup.inlineKeyboard([
-      [Markup.button.callback('📄 Set Comments Per Page', 'set_comments_page')],
-      [Markup.button.callback('💬 Toggle Chat Requests', 'toggle_chat_requests')],
-      [Markup.button.callback('🔔 Notification Settings', 'notification_settings')],
-      [Markup.button.callback('🔙 Back to Profile', 'show_profile')]
-    ]);
-
-    await ctx.editMessageText(settingsText, { 
-      parse_mode: 'Markdown',
-      reply_markup: keyboard.reply_markup 
-    });
-    await ctx.answerCbQuery();
-  } catch (error) {
-    console.error('❌ Settings error:', error);
-    await ctx.answerCbQuery('❌ Error loading settings');
-  }
-});
-
-// ==================== USER STATS BUTTON ====================
-bot.action('user_stats', async (ctx) => {
-  const userId = ctx.from.id;
-  
-  try {
-    const user = await dbManager.getUser(userId);
-    if (!user) {
-      await ctx.answerCbQuery('❌ User not found');
-      return;
-    }
-
-    // Get user statistics
-    const confessionsSnapshot = await db.collection('confessions')
-      .where('userId', '==', userId)
-      .where('status', '==', 'approved')
-      .get();
-
-    const commentsSnapshot = await db.collection('comments')
-      .where('userId', '==', userId)
-      .get();
-
-    const messagesSnapshot = await db.collection('private_messages')
-      .where('fromUserId', '==', userId)
-      .get();
-
-    const totalConfessions = confessionsSnapshot.size;
-    const totalComments = commentsSnapshot.size;
-    const totalMessages = messagesSnapshot.size;
-    
-    // Calculate engagement rate (simplified)
-    const engagementRate = totalConfessions > 0 ? Math.min(100, (totalComments + totalMessages) * 5) : 0;
-    
-    // Determine rank based on activity
-    let rank = 'New User';
-    if (totalConfessions > 10) rank = 'Active Member';
-    if (totalConfessions > 25) rank = 'Regular Contributor';
-    if (totalConfessions > 50) rank = 'Community Star';
-    if (totalConfessions > 100) rank = 'Confession Legend';
-
-    const statsText = `📊 *Your Statistics*\n\n` +
-      `💡 Confessions Posted: ${totalConfessions}\n` +
-      `💬 Comments Made: ${totalComments}\n` +
-      `💌 Messages Sent: ${totalMessages}\n` +
-      `👥 Followers: ${user.followers.length}\n` +
-      `📈 Following: ${user.following.length}\n` +
-      `✨ Aura Points: ${user.aura}\n\n` +
-      `🎯 Engagement Rate: ${engagementRate}%\n` +
-      `⭐ Rank: ${rank}\n\n` +
-      `📅 Member since: ${new Date(user.joinedAt).toLocaleDateString()}`;
-
-    const keyboard = Markup.inlineKeyboard([
-      [Markup.button.callback('📈 View Analytics', 'view_analytics')],
-      [Markup.button.callback('🏆 Achievements', 'view_achievements')],
-      [Markup.button.callback('🔙 Back to Profile', 'show_profile')]
-    ]);
-
-    await ctx.editMessageText(statsText, { 
-      parse_mode: 'Markdown',
-      reply_markup: keyboard.reply_markup 
-    });
-    await ctx.answerCbQuery();
-  } catch (error) {
-    console.error('❌ Stats error:', error);
-    await ctx.answerCbQuery('❌ Error loading stats');
   }
 });
 
@@ -1418,236 +1183,6 @@ bot.action(/set_emoji_(.+)/, async (ctx) => {
   } catch (error) {
     console.error('❌ Emoji error:', error);
     await ctx.answerCbQuery('❌ Error updating emoji');
-  }
-});
-
-// ==================== PRIVACY SETTINGS BUTTON ====================
-bot.action('privacy_settings', async (ctx) => {
-  const userId = ctx.from.id;
-  
-  try {
-    const user = await dbManager.getUser(userId);
-    if (!user) {
-      await ctx.answerCbQuery('❌ User not found');
-      return;
-    }
-
-    const privacyText = `👁️ *Privacy Settings*\n\n` +
-      `Control what others can see on your profile:\n\n` +
-      `${user.privacySettings.showConfessions ? '✅' : '❌'} My Confessions\n` +
-      `${user.privacySettings.showComments ? '✅' : '❌'} My Comments\n` +
-      `${user.privacySettings.showFollowing ? '✅' : '❌'} Who I Follow\n` +
-      `${user.privacySettings.showFollowers ? '✅' : '❌'} My Followers\n` +
-      `${user.privacySettings.allowChats ? '✅' : '❌'} Allow Chat Requests`;
-
-    const keyboard = Markup.inlineKeyboard([
-      [Markup.button.callback('👁️ Toggle My Confessions', 'toggle_confessions')],
-      [Markup.button.callback('💬 Toggle My Comments', 'toggle_comments')],
-      [Markup.button.callback('👥 Toggle Following', 'toggle_following')],
-      [Markup.button.callback('📢 Toggle Followers', 'toggle_followers')],
-      [Markup.button.callback('🔒 Toggle Chat Requests', 'toggle_chat_requests')],
-      [Markup.button.callback('🔙 Back', 'edit_profile')]
-    ]);
-
-    await ctx.editMessageText(privacyText, { 
-      parse_mode: 'Markdown',
-      reply_markup: keyboard.reply_markup 
-    });
-    await ctx.answerCbQuery();
-  } catch (error) {
-    console.error('❌ Privacy error:', error);
-    await ctx.answerCbQuery('❌ Error loading privacy settings');
-  }
-});
-
-// ==================== TOGGLE PRIVACY SETTINGS ====================
-const toggleSettings = {
-  'toggle_confessions': 'showConfessions',
-  'toggle_comments': 'showComments',
-  'toggle_following': 'showFollowing',
-  'toggle_followers': 'showFollowers',
-  'toggle_chat_requests': 'allowChats'
-};
-
-for (const [action, setting] of Object.entries(toggleSettings)) {
-  bot.action(action, async (ctx) => {
-    const userId = ctx.from.id;
-    
-    try {
-      const user = await dbManager.getUser(userId);
-      if (user) {
-        const newValue = !user.privacySettings[setting];
-        
-        await dbManager.updateUser(userId, {
-          [`privacySettings.${setting}`]: newValue
-        });
-
-        await ctx.answerCbQuery(newValue ? '✅ Enabled' : '❌ Disabled');
-        // Refresh privacy settings display
-        await bot.action('privacy_settings', ctx);
-      }
-    } catch (error) {
-      console.error('❌ Toggle error:', error);
-      await ctx.answerCbQuery('❌ Error updating setting');
-    }
-  });
-}
-
-// ==================== SET COMMENTS PER PAGE ====================
-bot.action('set_comments_page', async (ctx) => {
-  const commentsText = `📄 *Set Comments Per Page*\n\n` +
-    `Choose how many comments to display per page:\n\n` +
-    `Current setting: 15 comments per page`;
-
-  const keyboard = Markup.inlineKeyboard([
-    [Markup.button.callback('10 per page', 'set_page_10')],
-    [Markup.button.callback('15 per page', 'set_page_15')],
-    [Markup.button.callback('20 per page', 'set_page_20')],
-    [Markup.button.callback('30 per page', 'set_page_30')],
-    [Markup.button.callback('50 per page', 'set_page_50')],
-    [Markup.button.callback('🔙 Back', 'user_settings')]
-  ]);
-
-  await ctx.editMessageText(commentsText, { 
-    parse_mode: 'Markdown',
-    reply_markup: keyboard.reply_markup 
-  });
-  await ctx.answerCbQuery();
-});
-
-// ==================== SET PAGE SIZE BUTTONS ====================
-bot.action(/set_page_(.+)/, async (ctx) => {
-  const pageSize = parseInt(ctx.match[1]);
-  const userId = ctx.from.id;
-
-  try {
-    await dbManager.updateUser(userId, {
-      'settings.commentsPerPage': pageSize
-    });
-
-    const keyboard = Markup.inlineKeyboard([
-      [Markup.button.callback('🔙 Back to Settings', 'user_settings')]
-    ]);
-
-    await ctx.editMessageText(`✅ Comments per page set to: ${pageSize}`, { 
-      reply_markup: keyboard.reply_markup 
-    });
-    await ctx.answerCbQuery('✅ Page size updated!');
-  } catch (error) {
-    console.error('❌ Page size error:', error);
-    await ctx.answerCbQuery('❌ Error updating page size');
-  }
-});
-
-// ==================== MY MESSAGES BUTTON ====================
-bot.action('my_messages', async (ctx) => {
-  const userId = ctx.from.id;
-  
-  try {
-    // Get recent messages
-    const messagesSnapshot = await db.collection('private_messages')
-      .where('participants', 'array-contains', userId.toString())
-      .orderBy('createdAt', 'desc')
-      .limit(10)
-      .get();
-
-    const messages = messagesSnapshot.docs.map(doc => doc.data());
-    
-    if (messages.length === 0) {
-      const noMessagesText = `💌 *Your Messages*\n\n` +
-        `No messages yet.\n\n` +
-        `💡 Start conversations by sending private messages to other users!`;
-
-      const keyboard = Markup.inlineKeyboard([
-        [Markup.button.callback('📋 Browse Confessions', 'browse_confessions')],
-        [Markup.button.callback('🔙 Back to Profile', 'show_profile')]
-      ]);
-
-      await ctx.editMessageText(noMessagesText, { 
-        parse_mode: 'Markdown',
-        reply_markup: keyboard.reply_markup 
-      });
-    } else {
-      let messagesText = `💌 *Your Recent Messages*\n\n`;
-      
-      messages.slice(0, 5).forEach((message, index) => {
-        const isFromMe = message.fromUserId === userId;
-        const prefix = isFromMe ? '➡️ You' : '⬅️ Anonymous';
-        messagesText += `${prefix}: ${message.text.substring(0, 50)}${message.text.length > 50 ? '...' : ''}\n\n`;
-      });
-
-      messagesText += `📨 Total conversations: ${new Set(messages.map(m => m.participants.join(','))).size}`;
-
-      const keyboard = Markup.inlineKeyboard([
-        [Markup.button.callback('📨 View All Messages', 'view_all_messages')],
-        [Markup.button.callback('🔙 Back to Profile', 'show_profile')]
-      ]);
-
-      await ctx.editMessageText(messagesText, { 
-        parse_mode: 'Markdown',
-        reply_markup: keyboard.reply_markup 
-      });
-    }
-    await ctx.answerCbQuery();
-  } catch (error) {
-    console.error('❌ Messages error:', error);
-    await ctx.answerCbQuery('❌ Error loading messages');
-  }
-});
-
-// ==================== HANDLE ALL MESSAGES ====================
-bot.on('text', async (ctx) => {
-  console.log(`📨 Received text from ${ctx.from.id}: ${ctx.message.text.substring(0, 50)}...`);
-  
-  try {
-    // Handle confession submission
-    if (ctx.session.waitingForConfession) {
-      await handleConfessionSubmission(ctx, ctx.message.text);
-      return;
-    }
-    
-    // Handle comment submission
-    if (ctx.session.waitingForComment) {
-      await handleCommentSubmission(ctx, ctx.message.text);
-      return;
-    }
-    
-    // Handle private message submission
-    if (ctx.session.waitingForPrivateMessage) {
-      await handlePrivateMessage(ctx, ctx.message.text);
-      return;
-    }
-    
-    // Handle rejection reason from admin
-    if (ctx.session.rejectingConfession) {
-      await handleRejectionReason(ctx, ctx.message.text);
-      return;
-    }
-    
-    // Handle admin messages to users
-    if (ctx.session.messagingUser) {
-      await handleAdminMessage(ctx, ctx.message.text);
-      return;
-    }
-
-    // Handle nickname change
-    if (ctx.session.changingNickname) {
-      await handleNicknameChange(ctx, ctx.message.text);
-      return;
-    }
-
-    // Handle bio change
-    if (ctx.session.changingBio) {
-      await handleBioChange(ctx, ctx.message.text);
-      return;
-    }
-
-    // If no session state, show main menu
-    await showMainMenu(ctx);
-    
-  } catch (error) {
-    console.error('❌ Message handler error:', error);
-    await ctx.reply('❌ Error processing message. Please try /start again.');
   }
 });
 
@@ -1778,6 +1313,119 @@ bot.action(/toggle_follow_(.+)/, async (ctx) => {
   }
 });
 
+// ==================== ADMIN VIEW USER BUTTON ====================
+bot.action(/view_user_(.+)/, async (ctx) => {
+  const userId = ctx.match[1];
+  
+  try {
+    const user = await dbManager.getUser(userId);
+    if (!user) {
+      await ctx.answerCbQuery('❌ User not found');
+      return;
+    }
+
+    // Get user's confessions count
+    const confessionsSnapshot = await db.collection('confessions')
+      .where('userId', '==', userId)
+      .get();
+
+    const userInfo = `👤 *User Profile (Admin View)*\n\n` +
+      `🆔 *Telegram ID:* ${userId}\n` +
+      `📛 *Username:* @${user.username || 'No username'}\n` +
+      `🎭 *Nickname:* ${user.nickname}\n` +
+      `✨ *Aura:* ${user.aura}\n` +
+      `👥 *Followers:* ${user.followers.length} | *Following:* ${user.following.length}\n\n` +
+      `📊 *Statistics:*\n` +
+      `• Confessions: ${confessionsSnapshot.size}\n` +
+      `• Joined: ${new Date(user.joinedAt).toLocaleDateString()}\n` +
+      `• Last Seen: ${new Date(user.lastSeen).toLocaleString()}\n\n` +
+      `📝 *Bio:* ${user.bio}`;
+
+    const keyboard = Markup.inlineKeyboard([
+      [
+        Markup.button.callback('📩 Message User', `message_user_${userId}`),
+        Markup.button.callback('🚫 Block User', `block_user_${userId}`)
+      ],
+      [
+        Markup.button.callback('📊 User Analytics', `user_analytics_${userId}`),
+        Markup.button.callback('🔙 Back', 'admin_dashboard')
+      ]
+    ]);
+
+    await ctx.editMessageText(userInfo, { 
+      parse_mode: 'Markdown',
+      reply_markup: keyboard.reply_markup 
+    });
+    await ctx.answerCbQuery();
+  } catch (error) {
+    console.error('❌ View user error:', error);
+    await ctx.answerCbQuery('❌ Error loading user');
+  }
+});
+
+// ==================== ADMIN MESSAGE USER BUTTON ====================
+bot.action(/message_user_(.+)/, async (ctx) => {
+  const userId = ctx.match[1];
+  
+  try {
+    const user = await dbManager.getUser(userId);
+    if (!user) {
+      await ctx.answerCbQuery('❌ User not found');
+      return;
+    }
+
+    await ctx.editMessageText(
+      `📩 *Messaging User*\n\n` +
+      `User: ${user.nickname} (@${user.username || 'no_username'})\n` +
+      `ID: ${userId}\n\n` +
+      `Type your message below:`,
+      { parse_mode: 'Markdown' }
+    );
+    ctx.session.messagingUser = userId;
+    await ctx.answerCbQuery();
+  } catch (error) {
+    console.error('❌ Message user error:', error);
+    await ctx.answerCbQuery('❌ Error starting message');
+  }
+});
+
+// ==================== HANDLE ADMIN MESSAGE ====================
+async function handleAdminMessage(ctx, text) {
+  const userId = ctx.session.messagingUser;
+
+  try {
+    const user = await dbManager.getUser(userId);
+    if (!user) {
+      await ctx.reply('❌ User not found');
+      ctx.session.messagingUser = null;
+      return;
+    }
+
+    await bot.telegram.sendMessage(
+      userId, 
+      `📩 *Message from Admin*\n\n${text}\n\n💬 You can reply to this message.`,
+      { parse_mode: 'Markdown' }
+    );
+
+    // Save message to database for monitoring
+    const messageId = `admin_msg_${Date.now()}`;
+    await dbManager.createMessage({
+      messageId: messageId,
+      fromUserId: ctx.from.id,
+      toUserId: userId,
+      text: text,
+      isAdminMessage: true,
+      createdAt: new Date().toISOString()
+    });
+
+    await ctx.reply(`✅ Message sent to ${user.nickname} (@${user.username || 'no_username'})`);
+  } catch (error) {
+    await ctx.reply(`❌ Failed to send message. User may have blocked the bot.`);
+  }
+  
+  ctx.session.messagingUser = null;
+}
+
 // ==================== ADMIN DASHBOARD ====================
 bot.command('admin', async (ctx) => {
   const adminIds = process.env.ADMIN_IDS?.split(',') || [];
@@ -1871,6 +1519,62 @@ bot.action('admin_pending', async (ctx) => {
   }
 });
 
+// ==================== HANDLE ALL MESSAGES ====================
+bot.on('text', async (ctx) => {
+  console.log(`📨 Received text from ${ctx.from.id}: ${ctx.message.text.substring(0, 50)}...`);
+  
+  try {
+    // Handle confession submission
+    if (ctx.session.waitingForConfession) {
+      await handleConfessionSubmission(ctx, ctx.message.text);
+      return;
+    }
+    
+    // Handle comment submission
+    if (ctx.session.waitingForComment) {
+      await handleCommentSubmission(ctx, ctx.message.text);
+      return;
+    }
+    
+    // Handle private message submission
+    if (ctx.session.waitingForPrivateMessage) {
+      await handlePrivateMessage(ctx, ctx.message.text);
+      return;
+    }
+    
+    // Handle rejection reason from admin
+    if (ctx.session.rejectingConfession) {
+      await handleRejectionReason(ctx, ctx.message.text);
+      return;
+    }
+    
+    // Handle admin messages to users
+    if (ctx.session.messagingUser) {
+      await handleAdminMessage(ctx, ctx.message.text);
+      return;
+    }
+
+    // Handle nickname change
+    if (ctx.session.changingNickname) {
+      await handleNicknameChange(ctx, ctx.message.text);
+      return;
+    }
+
+    // Handle bio change
+    if (ctx.session.changingBio) {
+      await handleBioChange(ctx, ctx.message.text);
+      return;
+    }
+
+    // If no session state, show main menu
+    await showMainMenu(ctx);
+    
+  } catch (error) {
+    console.error('❌ Message handler error:', error);
+    await ctx.reply('❌ Error processing message. Please try /start again.');
+  }
+});
+
 // ==================== ERROR HANDLER ====================
 bot.catch((err, ctx) => {
   console.error('❌ Bot error:', err);
@@ -1881,19 +1585,12 @@ bot.catch((err, ctx) => {
     console.error('❌ Even error reply failed:', e);
   }
 });
-// Add this before the Vercel handler
-bot.telegram.setWebhook(`https://${process.env.VERCEL_URL}/api/bot`);
 
-// Health check
+// ==================== HEALTH CHECK ====================
 bot.command('status', (ctx) => {
   ctx.reply(`✅ Bot is running\n📊 Confession counter: ${confessionCounter}\n🕒 Uptime: ${process.uptime()}s`);
 });
-// ==================== VERCEL HANDLER ====================
-// Add this at the top of your Vercel handler
-if (!process.env.TELEGRAM_BOT_TOKEN) {
-  console.error('❌ TELEGRAM_BOT_TOKEN is required');
-}
-// ==================== VERCEL HANDLER ====================
+
 // ==================== VERCEL HANDLER ====================
 module.exports = async (req, res) => {
   console.log('🔄 Vercel webhook received', req.method, req.url);
@@ -1960,4 +1657,5 @@ if (process.env.NODE_ENV === 'development') {
   // Enable graceful stop
   process.once('SIGINT', () => bot.stop('SIGINT'));
   process.once('SIGTERM', () => bot.stop('SIGTERM'));
-}
+      }
+
