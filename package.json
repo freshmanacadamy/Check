@@ -5,7 +5,9 @@
   "main": "api/bot.js",
   "scripts": {
     "dev": "nodemon api/bot.js",
-    "start": "node api/bot.js"
+    "start": "node api/bot.js",
+    "vercel-build": "echo 'No build needed for serverless function'",
+    "build": "echo 'Build completed'"
   },
   "dependencies": {
     "telegraf": "^4.16.3",
@@ -14,5 +16,8 @@
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=18.x"
   }
 }
