@@ -1,7 +1,7 @@
 {
   "name": "ju-confession-bot",
   "version": "1.0.0",
-  "description": "Complete JU Confession Bot with all features",
+  "description": "JU Confession Bot with complete features",
   "main": "api/bot.js",
   "scripts": {
     "dev": "nodemon api/bot.js",
@@ -14,8 +14,5 @@
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
-  },
-  "engines": {
-    "node": ">=18.0.0"
   }
 }
