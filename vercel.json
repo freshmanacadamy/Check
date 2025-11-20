@@ -20,10 +20,5 @@
       "src": "/(.*)",
       "dest": "/api/bot.js"
     }
-  ],
-  "functions": {
-    "api/bot.js": {
-      "maxDuration": 30
-    }
-  }
+  ]
 }
