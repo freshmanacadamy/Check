@@ -1894,49 +1894,70 @@ if (!process.env.TELEGRAM_BOT_TOKEN) {
   console.error('❌ TELEGRAM_BOT_TOKEN is required');
 }
 // ==================== VERCEL HANDLER ====================
+// ==================== VERCEL HANDLER ====================
 module.exports = async (req, res) => {
   console.log('🔄 Vercel webhook received', req.method, req.url);
   
+  // Set CORS headers
+  res.setHeader('Access-Control-Allow-Credentials', true);
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+  res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version');
+  
+  // Handle CORS preflight
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
   try {
-    // Only handle POST requests for webhooks
+    // Initialize counter if needed
+    if (confessionCounter === 0) {
+      await initializeCounter();
+    }
+    
     if (req.method === 'POST') {
       await bot.handleUpdate(req.body);
-      res.status(200).json({ status: 'OK' });
+      res.status(200).json({ status: 'OK', message: 'Webhook processed' });
     } else {
-      // For GET requests, show bot status
+      // Health check for GET requests
       res.status(200).json({ 
         status: 'Bot is running',
         timestamp: new Date().toISOString(),
-        confessionCounter: confessionCounter
+        confessionCounter: confessionCounter,
+        environment: process.env.NODE_ENV || 'production'
       });
     }
   } catch (error) {
     console.error('❌ Webhook error:', error);
     res.status(200).json({ 
       status: 'OK', 
-      error: error.message 
+      error: error.message,
+      timestamp: new Date().toISOString()
     });
   }
 };
+
 // ==================== LOCAL DEVELOPMENT ====================
 if (process.env.NODE_ENV === 'development') {
-  bot.launch().then(() => {
-    console.log('🤫 JU Confession Bot running locally');
-    console.log('✅ All features loaded:');
-    console.log('   ✍️  Confession System');
-    console.log('   💬 Comment System');
-    console.log('   💌 Private Messaging');
-    console.log('   👤 User Profiles');
-    console.log('   ⚙️  Settings & Privacy');
-    console.log('   🔧 Admin Dashboard');
-    console.log('   📊 Analytics');
+  console.log('🚀 Starting bot in development mode...');
+  
+  // Initialize before starting
+  initializeCounter().then(() => {
+    bot.launch().then(() => {
+      console.log('🤫 JU Confession Bot running locally');
+      console.log('✅ All features loaded:');
+      console.log('   ✍️  Confession System');
+      console.log('   💬 Comment System');
+      console.log('   💌 Private Messaging');
+      console.log('   👤 User Profiles');
+      console.log('   ⚙️  Settings & Privacy');
+      console.log('   🔧 Admin Dashboard');
+      console.log('   📊 Analytics');
+    });
   });
   
   // Enable graceful stop
   process.once('SIGINT', () => bot.stop('SIGINT'));
   process.once('SIGTERM', () => bot.stop('SIGTERM'));
 }
-
-// ==================== EXPORT FOR VERCEL ====================
-module.exports.bot = bot;
-
